@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "persona-layer"
-version = "0.1.0"
-description = "AIエージェントと人間のあいだに立つ、移植可能な人格（ペルソナ）インターフェース層"
+version = "0.4.0"
+description = "AI Agent インターフェース用 人格レイヤー（開発指示書 v0.4 準拠）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -24,13 +24,13 @@ dev = [
 ]
 
 [project.scripts]
-persona = "persona_layer.cli:main"
+persona-layer = "persona_layer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-persona_layer = ["web/*"]
+persona_layer = ["tables/*.yaml", "web/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,222 +1,224 @@
-"""`persona` コマンド: 検証・コンパイル・エクスポート・会話・サーバ起動。"""
+"""`persona-layer` コマンド: 人格の作成・確認・交配・移植と、デモルームの実行。"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
-from .backends.base import AgentBackend
-from .backends.mock import EchoBackend
-from .compiler import compile_system_prompt
-from .exporters import export, formats
-from .loader import PersonaLoadError, load_persona, load_personas_dir
-from .runtime import PersonaRuntime
-from .schema import json_schema
+from .agent import make_agent
+from .breeder import PersonaBreeder, BreedError
+from .composers import compose_prompt, compose_prosody
+from .models import Persona, PersonaBinding
+from .porter import PersonaPorter, PortError
+from .presets import from_preset, preset_names
+from .registry import PersonaRegistry
+from .room import Room
 
 
-def make_backend(name: str | None = None) -> AgentBackend:
-    """環境変数から応答バックエンドを構成する。
-
-    PERSONA_BACKEND=mock|anthropic|openai|relay|auto（既定: auto）
-    auto は ANTHROPIC_API_KEY → OPENAI_API_KEY → mock の順で選ぶ。
-    relay は RELAY_URL（上流エージェントのURL）が必要。
-    """
-    name = name or os.environ.get("PERSONA_BACKEND", "auto")
-    if name == "auto":
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            name = "anthropic"
-        elif os.environ.get("OPENAI_API_KEY"):
-            name = "openai"
-        else:
-            name = "mock"
-    if name == "mock":
-        return EchoBackend()
-    if name == "anthropic":
-        from .backends.anthropic_backend import AnthropicBackend
-
-        return AnthropicBackend(
-            model=os.environ.get("PERSONA_MODEL", "claude-sonnet-5")
-        )
-    if name == "openai":
-        from .backends.openai_backend import OpenAIBackend
-
-        return OpenAIBackend(model=os.environ.get("PERSONA_MODEL", "gpt-4o-mini"))
-    if name == "relay":
-        from .backends.relay import RelayBackend
-
-        url = os.environ.get("RELAY_URL", "")
-        if not url:
-            raise ValueError("relay バックエンドには RELAY_URL の設定が必要です")
-        return RelayBackend(url)
-    raise ValueError(f"未知のバックエンドです: {name}")
-
-
-def make_restyler() -> AgentBackend | None:
-    """中継モードの文体変換に使う LLM を構成する。
-
-    relay バックエンド使用時に API キーがあれば LLM を返し、なければ None
-    （= 上流の応答をそのまま返す）。それ以外のバックエンドでは、応答生成側の
-    LLM がペルソナのシステムプロンプトを直接受け取るため不要。
-    """
-    if os.environ.get("PERSONA_BACKEND") != "relay":
-        return None
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        from .backends.anthropic_backend import AnthropicBackend
-
-        return AnthropicBackend()
-    if os.environ.get("OPENAI_API_KEY"):
-        from .backends.openai_backend import OpenAIBackend
-
-        return OpenAIBackend()
-    return None
-
-
-def _load_or_exit(path: str):
+def _load_persona(path: str) -> Persona:
     try:
-        return load_persona(path)
-    except PersonaLoadError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
+        return Persona.model_validate(json.loads(Path(path).read_text(encoding="utf-8")))
+    except Exception as exc:
+        print(f"エラー: {path} を読めません: {exc}", file=sys.stderr)
         sys.exit(1)
 
 
-def cmd_validate(args: argparse.Namespace) -> None:
-    persona = _load_or_exit(args.file)
-    print(f"OK: {persona.name} ({persona.id} v{persona.version})")
+def _dump_persona(persona: Persona, path: str | None) -> None:
+    text = json.dumps(
+        persona.model_dump(by_alias=True, exclude_none=True),
+        ensure_ascii=False,
+        indent=2,
+    )
+    if path:
+        Path(path).write_text(text + "\n", encoding="utf-8")
+        print(f"書き出しました: {path}")
+    else:
+        print(text)
+
+
+def cmd_presets(args: argparse.Namespace) -> None:
+    for name in preset_names():
+        print(name)
+
+
+def cmd_create(args: argparse.Namespace) -> None:
+    try:
+        persona = from_preset(args.preset, args.id, args.name)
+    except KeyError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
+    _dump_persona(persona, args.output)
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    p = _load_or_exit(args.file)
-    print(f"id:          {p.id}")
-    print(f"name:        {p.name}")
-    print(f"version:     {p.version}")
-    print(f"language:    {p.language}")
-    print(f"description: {p.description}")
-    print(f"role:        {p.identity.role}")
-    print(f"traits:      {'、'.join(p.personality.traits)}")
-    print(f"voice:       {'有効' if p.voice.enabled else '無効'} ({p.voice_language()})")
-    print(f"examples:    {len(p.examples)}件")
+    p = _load_persona(args.file)
+    print(f"id:        {p.id}  (schema {p.schema_version})")
+    print(f"名前:      {p.display_name}")
+    print(f"一人称:    {p.anchor.first_person} / 二人称: {p.anchor.second_person}")
+    print(f"口癖:      {'、'.join(p.anchor.verbal_tics)}")
+    print(f"6軸:       {p.style.as_dict()}")
+    prosody = compose_prosody(p)
+    print(f"prosody:   rate={prosody.rate}% pitch={prosody.pitch}")
+    if p.lineage:
+        print(f"系譜:      親={p.lineage.parents} 世代={p.lineage.generation} seed={p.lineage.seed}")
 
 
-def cmd_compile(args: argparse.Namespace) -> None:
-    persona = _load_or_exit(args.file)
-    print(compile_system_prompt(persona))
+def cmd_prompt(args: argparse.Namespace) -> None:
+    print(compose_prompt(_load_persona(args.file)))
+
+
+def cmd_breed(args: argparse.Namespace) -> None:
+    a = _load_persona(args.parent_a)
+    b = _load_persona(args.parent_b)
+    try:
+        result = PersonaBreeder().breed(
+            a, b, seed=args.seed, mutation_rate=args.mutation_rate
+        )
+    except BreedError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
+    for warning in result.warnings:
+        print(f"警告: {warning}", file=sys.stderr)
+    _dump_persona(result.child, args.output)
 
 
 def cmd_export(args: argparse.Namespace) -> None:
-    persona = _load_or_exit(args.file)
+    persona = _load_persona(args.file)
     try:
-        result = export(persona, args.format)
-    except ValueError as exc:
+        out = PersonaPorter().export(persona, args.out_dir, sprites_dir=args.sprites)
+    except PortError as exc:
         print(f"エラー: {exc}", file=sys.stderr)
         sys.exit(1)
+    print(f"エクスポートしました: {out}")
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    registry = PersonaRegistry()
+    try:
+        persona, voice = PersonaPorter(registry).import_file(args.package)
+    except PortError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"インポートしました: {persona.display_name} ({persona.id})")
+    print(f"voice.json: {json.dumps(voice, ensure_ascii=False)}")
+    print("※ Binding（得意分野）とメモリーは含まれません。管理者が別途設定してください（§10.2）")
     if args.output:
-        out = Path(args.output)
-        if out.is_dir():
-            out = out / result.suggested_filename
-        out.write_text(result.text, encoding="utf-8")
-        print(f"書き出しました: {out}")
-    else:
-        print(result.text)
+        _dump_persona(persona, args.output)
 
 
-def cmd_schema(args: argparse.Namespace) -> None:
-    print(json.dumps(json_schema(), ensure_ascii=False, indent=2))
+async def _demo(persona_paths: list[str]) -> None:
+    room = Room(timescale=1.0)
+    room.join_human("user", "利用者")
+    for i, path in enumerate(persona_paths):
+        persona = _load_persona(path)
+        agent = make_agent(f"agent-{i}")
+        binding = PersonaBinding(
+            persona_id=persona.id,
+            agent_id=agent.agent_id,
+            expertise=[],
+            invocation_aliases=[persona.display_name],
+        )
+        await room.enter(persona, binding, agent)
+        print(f"[入室] {persona.display_name} ({persona.id}) → {agent.agent_id}")
 
+    queue = room.bus.subscribe()
 
-def cmd_chat(args: argparse.Namespace) -> None:
-    from .channels.cli import chat_loop
+    async def printer() -> None:
+        while True:
+            event = await queue.get()
+            if event.type == "speech" and event.speaker_kind == "persona":
+                tag = f"[{event.meta_kind}]" if event.kind == "meta" else "[回答]"
+                print(f"{event.speaker_name} {tag} {event.text}")
+                if event.expression:
+                    print(f"  (表情: {event.expression} / {event.ssml.split('>')[0]}>)")
 
-    persona = _load_or_exit(args.file)
+    printer_task = asyncio.create_task(printer())
+    print("=== デモルーム（終了: /quit）===")
     try:
-        backend = make_backend(args.backend)
-    except ValueError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
-        sys.exit(1)
-    restyler = make_restyler()
-    runtime = PersonaRuntime(persona, backend, restyler=restyler)
-    if backend.name == "mock":
-        print("[info] APIキー未設定のためモックバックエンドで動作しています", file=sys.stderr)
-    asyncio.run(chat_loop(runtime))
+        while True:
+            text = (await asyncio.to_thread(input, "あなた: ")).strip()
+            if text in {"/quit", "/exit"}:
+                break
+            if not text:
+                continue
+            room.human_speech("user", text)
+            await room.wait_quiet(idle_sec=0.5)
+    except (EOFError, KeyboardInterrupt):
+        pass
+    finally:
+        printer_task.cancel()
+        await room.close()
+
+
+def cmd_demo(args: argparse.Namespace) -> None:
+    asyncio.run(_demo(args.files))
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
     import uvicorn
 
-    from .channels.server import create_app
+    from .server import create_app
 
-    try:
-        personas = load_personas_dir(args.personas)
-    except PersonaLoadError as exc:
-        print(f"エラー: {exc}", file=sys.stderr)
-        sys.exit(1)
-    if not personas:
-        print(f"エラー: {args.personas} にペルソナ定義がありません", file=sys.stderr)
-        sys.exit(1)
-
-    tts = None
-    voicevox_url = os.environ.get("VOICEVOX_URL", "")
-    if voicevox_url:
-        from .voice.voicevox import VoicevoxTTS
-
-        tts = VoicevoxTTS(voicevox_url)
-
-    app = create_app(
-        personas,
-        backend_factory=lambda: make_backend(args.backend),
-        restyler_factory=make_restyler,
-        tts_provider=tts,
-    )
-    names = ", ".join(p.name for p in personas.values())
-    print(f"ペルソナ: {names}")
+    app = create_app(persona_files=args.files)
     print(f"http://{args.host}:{args.port}/ をブラウザで開いてください")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="persona",
-        description="Persona Layer: AIエージェントと人間のあいだの移植可能な人格インターフェース",
+        prog="persona-layer",
+        description="AI Agent インターフェース用 人格レイヤー",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("validate", help="ペルソナ定義を検証する")
-    p.add_argument("file")
-    p.set_defaults(func=cmd_validate)
+    p = sub.add_parser("presets", help="プリセット一覧（§13）")
+    p.set_defaults(func=cmd_presets)
 
-    p = sub.add_parser("show", help="ペルソナの概要を表示する")
+    p = sub.add_parser("create", help="プリセットから人格を作成する")
+    p.add_argument("--preset", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--name", required=True)
+    p.add_argument("--output", "-o", default=None)
+    p.set_defaults(func=cmd_create)
+
+    p = sub.add_parser("show", help="人格の概要を表示する")
     p.add_argument("file")
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("compile", help="システムプロンプトを生成して表示する")
+    p = sub.add_parser("prompt", help="システムプロンプトを表示する（PromptComposer）")
     p.add_argument("file")
-    p.set_defaults(func=cmd_compile)
+    p.set_defaults(func=cmd_prompt)
 
-    p = sub.add_parser("export", help="他エージェントへの移植用にエクスポートする")
+    p = sub.add_parser("breed", help="2体を交配して新人格を生成する（§12）")
+    p.add_argument("parent_a")
+    p.add_argument("parent_b")
+    p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--mutation-rate", type=float, default=0.15)
+    p.add_argument("--output", "-o", default=None)
+    p.set_defaults(func=cmd_breed)
+
+    p = sub.add_parser("export", help=".persona パッケージへエクスポートする（§10）")
     p.add_argument("file")
-    p.add_argument(
-        "--format", "-f", default="system-prompt",
-        help=f"形式: {', '.join(formats())}",
-    )
-    p.add_argument("--output", "-o", default="", help="出力ファイル/ディレクトリ")
+    p.add_argument("--out-dir", default=".")
+    p.add_argument("--sprites", default=None, help="表情スプライトのディレクトリ")
     p.set_defaults(func=cmd_export)
 
-    p = sub.add_parser("schema", help="ペルソナ定義の JSON Schema を表示する")
-    p.set_defaults(func=cmd_schema)
+    p = sub.add_parser("import", help=".persona パッケージを検証して取り込む（§10）")
+    p.add_argument("package")
+    p.add_argument("--output", "-o", default=None, help="Persona JSON の書き出し先")
+    p.set_defaults(func=cmd_import)
 
-    p = sub.add_parser("chat", help="ターミナルで会話する")
-    p.add_argument("file")
-    p.add_argument("--backend", "-b", default=None, help="mock|anthropic|openai|relay")
-    p.set_defaults(func=cmd_chat)
+    p = sub.add_parser("demo", help="ターミナルでデモルームを実行する")
+    p.add_argument("files", nargs="+", help="人格 JSON（複数可＝複数体同時稼働）")
+    p.set_defaults(func=cmd_demo)
 
-    p = sub.add_parser("serve", help="Web/音声チャネルのサーバを起動する")
-    p.add_argument("--personas", "-p", default="personas", help="ペルソナ定義ディレクトリ")
+    p = sub.add_parser("serve", help="リファレンスAPIサーバ + ブラウザデモを起動する")
+    p.add_argument("files", nargs="*", help="起動時に登録する人格 JSON")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
-    p.add_argument("--backend", "-b", default=None, help="mock|anthropic|openai|relay")
     p.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)

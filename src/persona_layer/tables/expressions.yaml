@@ -1,0 +1,21 @@
+# §8.1 状態 → 表情ID の決定的マッピング。
+# switch 文で書かず設定テーブルとして持つ（表情の追加＝アセット＋ここに1行）。
+base:
+  idle: neutral
+  listening: listening
+  thinking: thinking
+  speaking: speaking
+  reporting: speaking   # v1 は流用。必要になったら独立表情を追加
+event_override:
+  duration_sec: 2.0
+  map:
+    success: pleased
+    error: puzzled
+    correction: puzzled
+# §8.2 アセット仕様
+sprites:
+  ids: [neutral, listening, thinking, speaking, puzzled, pleased]
+  frames_per_expression: 3
+  fps: 3
+  format: webp
+  size: 512

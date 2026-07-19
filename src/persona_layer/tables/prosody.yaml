@@ -1,0 +1,11 @@
+# §5.3 affect 軸 → SSML prosody の静的テーブル。
+# テキスト（style_prompts.yaml の affect）と音声の駆動源を affect に一本化する。
+# この表はランタイムが持ち、移植パッケージには含めない（§10.3）。
+affect:
+  0: { rate: 95,  pitch: "-1st" }
+  1: { rate: 100, pitch: "+0st" }
+  2: { rate: 105, pitch: "+1st" }
+  3: { rate: 110, pitch: "+2st" }
+  4: { rate: 115, pitch: "+3st" }
+# rate_final = rate + round(arousal * 5)   単位: %
+arousal_rate_gain: 5

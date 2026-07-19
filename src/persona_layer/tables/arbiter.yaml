@@ -1,0 +1,17 @@
+# §11.6 発話権調停のパラメータ。
+# backoff は initiative 軸の関数（主導性の高い人格ほど先に喋る）。
+backoff_base_sec:
+  4: 0.2
+  3: 0.4
+  2: 0.6
+  1: 0.9
+  0: 1.2
+jitter_max_sec: 0.12          # 衝突を割るためだけの微小ジッタ（§2.5 の唯一の例外）
+# 高優先 bid（名指しされたとき）の backoff 基準値。
+# initiative に依存させない: 名指しされた人格は、主導性が低くても
+# 他の通常 bid（最短 200ms）より必ず先に発話権を取れる必要がある
+addressed_backoff_base_sec: 0.05
+silent_boost_turns: 6          # 直近この発話数のあいだ一度も喋っていなければ優先度を上げる
+silent_boost_factor: 0.75
+progress_after_sec: 3.0        # §7.1 処理がこれを超えたら progress メタ発話
+max_persona_turns: 12          # §11.7 安全弁。人間の発話なしに続く人格発話ターンの上限
