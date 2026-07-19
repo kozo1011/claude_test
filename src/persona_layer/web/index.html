@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persona Layer</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2430; --sub: #68717e;
+    --accent: #3b6fe0; --user: #dbe7ff; --bot: #eef0f3; --border: #dde1e7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1d2128; --text: #e8eaee; --sub: #98a0ac;
+      --accent: #6e97f5; --user: #27395e; --bot: #262b33; --border: #333a45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg); color: var(--text);
+    display: flex; flex-direction: column; height: 100dvh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .status { font-size: 12px; color: var(--sub); }
+  select, button {
+    font: inherit; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--text); padding: 6px 10px; cursor: pointer;
+  }
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 76%; padding: 10px 14px; border-radius: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
+  .msg .who { display: block; font-size: 11px; color: var(--sub); margin-bottom: 2px; }
+  .msg.system { align-self: center; background: none; color: var(--sub); font-size: 12px; }
+  footer { display: flex; gap: 8px; padding: 12px 16px; background: var(--panel); border-top: 1px solid var(--border); }
+  #input {
+    flex: 1; font: inherit; padding: 10px 14px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  #input:focus { outline: 2px solid var(--accent); }
+  button.icon { width: 44px; font-size: 18px; }
+  button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Persona Layer</h1>
+  <select id="personaSelect" title="ペルソナ切替"></select>
+  <button id="ttsToggle" class="icon" title="読み上げ ON/OFF">🔊</button>
+  <span class="status" id="status">接続中…</span>
+</header>
+<div id="log"></div>
+<footer>
+  <button id="micBtn" class="icon" title="音声入力">🎤</button>
+  <input id="input" placeholder="メッセージを入力（Enterで送信）" autocomplete="off">
+  <button id="sendBtn">送信</button>
+</footer>
+<script>
+"use strict";
+const log = document.getElementById("log");
+const input = document.getElementById("input");
+const sendBtn = document.getElementById("sendBtn");
+const micBtn = document.getElementById("micBtn");
+const ttsToggle = document.getElementById("ttsToggle");
+const statusEl = document.getElementById("status");
+const personaSelect = document.getElementById("personaSelect");
+
+let ws = null;
+let persona = null;      // {id, name, ...}
+let voice = null;        // web_speech_params
+let ttsEnabled = true;
+let currentBotEl = null; // ストリーミング中の吹き出し
+
+function addMessage(cls, text, who) {
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  if (who) {
+    const label = document.createElement("span");
+    label.className = "who";
+    label.textContent = who;
+    div.appendChild(label);
+  }
+  const body = document.createElement("span");
+  body.textContent = text;
+  div.appendChild(body);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return body;
+}
+
+/* ---- TTS: Web Speech API ---- */
+function speak(text) {
+  if (!ttsEnabled || !voice || !voice.enabled || !("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = voice.lang;
+  utter.pitch = voice.pitch;
+  utter.rate = voice.rate;
+  utter.volume = voice.volume;
+  const voices = speechSynthesis.getVoices();
+  const match = voices.find(v => voice.voice_hint && v.name.includes(voice.voice_hint))
+    || voices.find(v => v.lang === voice.lang)
+    || voices.find(v => v.lang.startsWith(voice.lang.split("-")[0]));
+  if (match) utter.voice = match;
+  speechSynthesis.speak(utter);
+}
+ttsToggle.addEventListener("click", () => {
+  ttsEnabled = !ttsEnabled;
+  ttsToggle.textContent = ttsEnabled ? "🔊" : "🔇";
+  if (!ttsEnabled) speechSynthesis.cancel();
+});
+
+/* ---- STT: Web Speech API ---- */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognizing = false;
+let recognition = null;
+if (SR) {
+  recognition = new SR();
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  recognition.onresult = (e) => {
+    const text = e.results[0][0].transcript.trim();
+    if (text) sendMessage(text);
+  };
+  recognition.onend = () => { recognizing = false; micBtn.classList.remove("active"); };
+  recognition.onerror = () => { recognizing = false; micBtn.classList.remove("active"); };
+} else {
+  micBtn.disabled = true;
+  micBtn.title = "このブラウザは音声入力に対応していません";
+}
+micBtn.addEventListener("click", () => {
+  if (!recognition) return;
+  if (recognizing) { recognition.stop(); return; }
+  speechSynthesis.cancel();
+  recognition.lang = voice ? voice.lang : "ja-JP";
+  recognition.start();
+  recognizing = true;
+  micBtn.classList.add("active");
+});
+
+/* ---- WebSocket ---- */
+function connect(personaId) {
+  if (ws) { ws.onclose = null; ws.close(); }
+  log.replaceChildren();
+  currentBotEl = null;
+  statusEl.textContent = "接続中…";
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/chat/${personaId}`);
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "session_start") {
+      persona = msg.persona;
+      voice = msg.voice;
+      statusEl.textContent = `${persona.name} と接続済み`;
+      if (msg.greeting) {
+        addMessage("bot", msg.greeting, persona.name);
+        speak(msg.greeting);
+      }
+    } else if (msg.type === "assistant_chunk") {
+      if (!currentBotEl) currentBotEl = addMessage("bot", "", persona.name);
+      currentBotEl.textContent += msg.text;
+      log.scrollTop = log.scrollHeight;
+    } else if (msg.type === "assistant_message") {
+      if (currentBotEl) currentBotEl.textContent = msg.text;
+      else addMessage("bot", msg.text, persona ? persona.name : "AI");
+      currentBotEl = null;
+      speak(msg.text);
+      setBusy(false);
+    } else if (msg.type === "error") {
+      addMessage("system", msg.message);
+      currentBotEl = null;
+      setBusy(false);
+    }
+  };
+  ws.onclose = () => { statusEl.textContent = "切断されました（再読み込みで再接続）"; };
+}
+
+function setBusy(busy) {
+  sendBtn.disabled = busy;
+  input.disabled = busy;
+  if (!busy) input.focus();
+}
+
+function sendMessage(text) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  addMessage("user", text, "あなた");
+  ws.send(JSON.stringify({ type: "user_message", text }));
+  input.value = "";
+  setBusy(true);
+}
+
+sendBtn.addEventListener("click", () => {
+  const text = input.value.trim();
+  if (text) sendMessage(text);
+});
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) sendBtn.click();
+});
+personaSelect.addEventListener("change", () => connect(personaSelect.value));
+
+/* ---- 初期化 ---- */
+(async function init() {
+  const res = await fetch("/api/personas");
+  const personas = await res.json();
+  for (const p of personas) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `${p.name}（${p.description || p.id}）`;
+    personaSelect.appendChild(opt);
+  }
+  if (personas.length) connect(personas[0].id);
+  else statusEl.textContent = "ペルソナがありません";
+  if ("speechSynthesis" in window) speechSynthesis.getVoices(); // 事前ロード
+})();
+</script>
+</body>
+</html>
