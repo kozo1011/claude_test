@@ -11,6 +11,7 @@ from pathlib import Path
 from .agent import make_agent
 from .breeder import PersonaBreeder, BreedError
 from .composers import compose_prompt, compose_prosody
+from .config import AppConfig, ConfigError, load_config
 from .models import Persona, PersonaBinding
 from .porter import PersonaPorter, PortError
 from .presets import from_preset, preset_names
@@ -109,12 +110,12 @@ def cmd_import(args: argparse.Namespace) -> None:
         _dump_persona(persona, args.output)
 
 
-async def _demo(persona_paths: list[str]) -> None:
+async def _demo(persona_paths: list[str], config: AppConfig) -> None:
     room = Room(timescale=1.0)
     room.join_human("user", "利用者")
     for i, path in enumerate(persona_paths):
         persona = _load_persona(path)
-        agent = make_agent(f"agent-{i}")
+        agent = make_agent(f"agent-{i}", config)
         binding = PersonaBinding(
             persona_id=persona.id,
             agent_id=agent.agent_id,
@@ -153,8 +154,34 @@ async def _demo(persona_paths: list[str]) -> None:
         await room.close()
 
 
+def _load_config_or_exit(path: str | None) -> AppConfig:
+    try:
+        return load_config(path)
+    except ConfigError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    config = _load_config_or_exit(args.config)
+    llm = config.resolve()
+    print(f"provider:   {llm.provider}")
+    print(f"model:      {llm.model or '(なし)'}")
+    print(f"base_url:   {llm.base_url or '(なし)'}")
+    print(f"APIキー:    {'設定済み' if llm.has_key else '未設定（→ ダミーで動作）'}")
+    if llm.provider == "mock" or not llm.has_key:
+        print("→ 実際の LLM ではなくダミー（EchoAgent）で応答します")
+
+
 def cmd_demo(args: argparse.Namespace) -> None:
-    asyncio.run(_demo(args.files))
+    config = _load_config_or_exit(args.config)
+    llm = config.resolve()
+    if llm.provider == "mock" or not llm.has_key:
+        print("[info] LLM 未設定のためダミー応答で動作します（詳細: persona-layer config）",
+              file=sys.stderr)
+    else:
+        print(f"[info] LLM: {llm.provider} / {llm.model}", file=sys.stderr)
+    asyncio.run(_demo(args.files, config))
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -162,7 +189,13 @@ def cmd_serve(args: argparse.Namespace) -> None:
 
     from .server import create_app
 
-    app = create_app(persona_files=args.files)
+    config = _load_config_or_exit(args.config)
+    llm = config.resolve()
+    app = create_app(persona_files=args.files, config=config)
+    if llm.provider == "mock" or not llm.has_key:
+        print("[info] LLM 未設定のためダミー応答で動作します（詳細: persona-layer config）")
+    else:
+        print(f"[info] LLM: {llm.provider} / {llm.model}")
     print(f"http://{args.host}:{args.port}/ をブラウザで開いてください")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
@@ -211,14 +244,20 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--output", "-o", default=None, help="Persona JSON の書き出し先")
     p.set_defaults(func=cmd_import)
 
+    p = sub.add_parser("config", help="現在有効な LLM 設定を表示する")
+    p.add_argument("--config", "-c", default=None, help="設定ファイル（YAML）のパス")
+    p.set_defaults(func=cmd_config)
+
     p = sub.add_parser("demo", help="ターミナルでデモルームを実行する")
     p.add_argument("files", nargs="+", help="人格 JSON（複数可＝複数体同時稼働）")
+    p.add_argument("--config", "-c", default=None, help="設定ファイル（YAML）のパス")
     p.set_defaults(func=cmd_demo)
 
     p = sub.add_parser("serve", help="リファレンスAPIサーバ + ブラウザデモを起動する")
     p.add_argument("files", nargs="*", help="起動時に登録する人格 JSON")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--config", "-c", default=None, help="設定ファイル（YAML）のパス")
     p.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)

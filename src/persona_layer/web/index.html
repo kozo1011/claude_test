@@ -103,14 +103,19 @@ async function init() {
   roomId = (await (await fetch("/api/rooms", {method:"POST"})).json()).roomId;
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/rooms/${roomId}`);
   ws.onmessage = ev => onEvent(JSON.parse(ev.data));
-  statusEl.textContent = personas.length ? `ルーム ${roomId}` : "人格が未登録です（serve に人格JSONを渡してください）";
+  let note = "";
+  try {
+    const cfg = await (await fetch("/api/config")).json();
+    note = cfg.usingMock ? "（回答: ダミー）" : `（回答: ${cfg.provider}/${cfg.model}）`;
+  } catch (e) { /* 設定が取れなくても動作は続ける */ }
+  statusEl.textContent = personas.length ? `ルーム ${roomId} ${note}` : "人格が未登録です（serve に人格JSONを渡してください）";
 }
 
 document.getElementById("enterBtn").onclick = async () => {
   if (!sel.value) return;
   const res = await fetch(`/api/rooms/${roomId}/enter`, {
     method:"POST", headers:{"content-type":"application/json"},
-    body: JSON.stringify({ personaId: sel.value, agentId: "echo" })
+    body: JSON.stringify({ personaId: sel.value, agentId: "default" })
   });
   if (!res.ok) add("sys", (await res.json()).detail || "入室に失敗しました");
 };

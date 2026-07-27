@@ -4,8 +4,18 @@ Agent 出力に声・文体・表情を付与する中間レイヤー。タス�
 生成も書き換えもしない（§1.3, §2.1）。
 """
 
-from .agent import Agent, AnthropicAgent, EchoAgent, ScriptedAgent, make_agent
+from .agent import (
+    Agent,
+    AnthropicAgent,
+    EchoAgent,
+    GeminiAgent,
+    OpenAICompatibleAgent,
+    ScriptedAgent,
+    build_agent,
+    make_agent,
+)
 from .breeder import BreedResult, PersonaBreeder, RefusalOverflowError
+from .config import AppConfig, ConfigError, LLMConfig, load_config
 from .bridge import AgentBridge, BridgeResult
 from .composers import Prosody, compose_prompt, compose_prosody, effective_distance
 from .expression import ExpressionMachine
@@ -37,12 +47,17 @@ __all__ = [
     "AgentBridge",
     "Anchor",
     "AnthropicAgent",
+    "AppConfig",
     "Assets",
     "BreedResult",
     "BridgeResult",
+    "ConfigError",
     "EchoAgent",
     "ExpressionMachine",
     "FamiliarityStore",
+    "GeminiAgent",
+    "LLMConfig",
+    "OpenAICompatibleAgent",
     "Lineage",
     "MemoryRecord",
     "MetaSpeech",
@@ -69,10 +84,12 @@ __all__ = [
     "StateEngine",
     "Style",
     "TTSAdapter",
+    "build_agent",
     "compose_prompt",
     "compose_prosody",
     "effective_distance",
     "from_preset",
+    "load_config",
     "make_agent",
     "preset_names",
 ]

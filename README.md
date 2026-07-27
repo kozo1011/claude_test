@@ -48,24 +48,49 @@ pip install -e ".[dev]"
 pytest   # 受け入れ基準 1,5,6,7,8,9,10,11,12 の自動テストを含む83件
 ```
 
-### 本物の AI につなぐ（任意）
+### 本物の AI につなぐ（LLM プロバイダの選択）
 
-Anthropic の API キーがあれば、ダミーの代わりに実際の LLM が回答を生成します
-（人格レイヤーはその回答を書き換えず、声・表情・相槌だけを乗せます）。ターミナルの
-`demo` コマンドは、キーが設定されていれば自動で LLM Agent を使います。
+ダミーの代わりに実際の LLM に回答を生成させられます（人格レイヤーはその回答を
+書き換えず、声・表情・相槌だけを乗せます・§2.1）。対応プロバイダは
+**OpenRouter / Gemini / Anthropic / OpenAI**。使うプロバイダとモデルは
+**設定ファイル**で選び、**API キーは環境変数**で渡します。
+
+**手順:**
+
+1. サンプルをコピーして設定ファイルを作る
+   ```bash
+   cp persona-layer.config.example.yaml persona-layer.config.yaml
+   ```
+2. `persona-layer.config.yaml` を編集し、`provider:` に使いたいものを書く
+   （`openrouter` / `gemini` / `anthropic` / `openai`）。モデル名も同ファイルで指定。
+3. API キーを環境変数に設定する（キーは設定ファイルには書きません）
+
+| プロバイダ | 環境変数 | モデル指定の例 |
+|---|---|---|
+| OpenRouter | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini`, `anthropic/claude-3.5-sonnet` 他 |
+| Gemini | `GEMINI_API_KEY`（`GOOGLE_API_KEY` 可） | `gemini-2.0-flash`, `gemini-2.5-flash` 他 |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-5` 他 |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` 他 |
 
 ```bash
-# Windows（コマンドプロンプト）:
-set ANTHROPIC_API_KEY=（あなたのキー）
-python -m persona_layer.cli demo personas\sewa-yaku-kaede.json
+# 例: OpenRouter を使う（Mac / Linux）
+export OPENROUTER_API_KEY=（あなたのキー）
+python -m persona_layer.cli config     # 有効な設定を確認
+python -m persona_layer.cli demo personas/sewa-yaku-kaede.json   # ターミナルで対話
+python -m persona_layer.cli serve personas/*.json               # ブラウザで対話
 
-# Mac / Linux:
-export ANTHROPIC_API_KEY=（あなたのキー）
-python -m persona_layer.cli demo personas/sewa-yaku-kaede.json
+# Windows（コマンドプロンプト）は set を使います
+set OPENROUTER_API_KEY=（あなたのキー）
 ```
 
-（ブラウザ版 `serve` はオフラインでも確実に動くよう、接続先を常にダミー Agent に
-固定しています。実 LLM を組み込むときは `AgentPool`／画面の `agentId` を差し替えます。）
+`run.bat` / `run.sh` を使う場合も、フォルダ内に `persona-layer.config.yaml` を
+置いて対応する環境変数を設定しておけば、ブラウザ版がそのプロバイダで動きます
+（キーが無ければ自動でダミーに戻るので、設定ミスでも起動は止まりません）。
+
+- **設定ファイルの場所**: カレントディレクトリの `persona-layer.config.yaml`、
+  または環境変数 `PERSONA_LAYER_CONFIG`、または `--config パス` で指定
+- **`provider: auto`**（設定ファイルが無いときの既定）: 環境変数にキーがある
+  プロバイダを自動で選びます（複数あれば anthropic → openai → openrouter → gemini の順）
 
 ## CLI クイックスタート
 
@@ -104,6 +129,9 @@ persona-layer serve personas/*.json
 | `src/persona_layer/meta_speech.py` | メタ発話のプリベイクと選択 | §7 |
 | `src/persona_layer/expression.py` | ExpressionMachine（決定的マッピング） | §8 |
 | `src/persona_layer/memory.py` | PersonaMemory（機械的トリガー・責務分離） | §9 |
+| `src/persona_layer/agent.py` | Agent アダプタ（Echo / Anthropic / OpenAI互換=OpenRouter / Gemini） | §1.3 |
+| `src/persona_layer/config.py` | LLM プロバイダ・モデルの設定（YAML + 環境変数） | §1.3 |
+| `persona-layer.config.example.yaml` | 設定ファイルのサンプル（コピーして使う） | — |
 | `src/persona_layer/bridge.py` | AgentBridge（素通し保証・1:1） | §2.1, §11.1 |
 | `src/persona_layer/room/` | Room / RoomBus / PersonaInstance / SpeechArbiter | §3, §11 |
 | `src/persona_layer/porter.py` | PersonaPorter（`.persona` パッケージ） | §10 |

@@ -16,7 +16,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from .agent import Agent, AnthropicAgent, EchoAgent
+from .agent import Agent, build_agent
+from .config import AppConfig, ConfigError, load_config
 from .breeder import BreedError, PersonaBreeder
 from .composers import compose_prompt
 from .models import Persona, PersonaBinding
@@ -57,7 +58,7 @@ class BindingRequest(BaseModel):
 
 class EnterRequest(BaseModel):
     personaId: str
-    agentId: str = "echo"
+    agentId: str = "default"
     userId: str = "default"
 
 
@@ -77,29 +78,36 @@ def _event_json(event: RoomEvent) -> dict:
 
 
 class AgentPool:
-    """agentId → Agent。実運用では既存 Agent 基盤へのアダプタをここに登録する。"""
+    """agentId → Agent。設定ファイルの provider に従って Agent を構成する。
 
-    def __init__(self) -> None:
+    agentId "default" は設定の既定プロバイダ、"echo"/"mock" はダミー、
+    "gemini"/"openrouter"/"anthropic"/"openai" 始まりは各プロバイダを指す。
+    """
+
+    def __init__(self, config: AppConfig) -> None:
+        self._config = config
         self._agents: dict[str, Agent] = {}
 
     def get(self, agent_id: str) -> Agent:
         if agent_id not in self._agents:
-            if agent_id.startswith("anthropic"):
-                try:
-                    self._agents[agent_id] = AnthropicAgent(agent_id=agent_id)
-                except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc)) from exc
-            else:
-                self._agents[agent_id] = EchoAgent(agent_id=agent_id)
+            try:
+                self._agents[agent_id] = build_agent(agent_id, self._config)
+            except (ValueError, ConfigError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         return self._agents[agent_id]
 
 
-def create_app(persona_files: list[str] | None = None) -> FastAPI:
+def create_app(
+    persona_files: list[str] | None = None,
+    config_path: str | None = None,
+    config: AppConfig | None = None,
+) -> FastAPI:
     app = FastAPI(title="Persona Layer", version="0.4.0")
     registry = PersonaRegistry()
     porter = PersonaPorter(registry)
     breeder = PersonaBreeder()
-    agents = AgentPool()
+    app_config = config or load_config(config_path)
+    agents = AgentPool(app_config)
     rooms: dict[str, Room] = {}
 
     for path in persona_files or []:
@@ -110,7 +118,7 @@ def create_app(persona_files: list[str] | None = None) -> FastAPI:
         registry.bind(
             PersonaBinding(
                 persona_id=persona.id,
-                agent_id="echo",
+                agent_id="default",  # 設定の provider（既定は環境変数から自動）を使う
                 invocation_aliases=[persona.display_name],
             )
         )
@@ -131,6 +139,17 @@ def create_app(persona_files: list[str] | None = None) -> FastAPI:
     async def presets() -> dict:
         return {
             name: {"style": entry["style"].as_dict()} for name, entry in PRESETS.items()
+        }
+
+    @app.get("/api/config")
+    async def active_config() -> dict:
+        """現在有効な LLM 設定（キーは返さない）。ブラウザの表示・確認用。"""
+        llm = app_config.resolve()
+        return {
+            "provider": llm.provider,
+            "model": llm.model,
+            "hasApiKey": llm.has_key,
+            "usingMock": llm.provider == "mock" or not llm.has_key,
         }
 
     @app.get("/api/personas")

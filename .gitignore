@@ -7,3 +7,5 @@ venv/
 dist/
 build/
 .env
+# ユーザー個別の LLM 設定（APIキー名などを含みうるためコミットしない）
+persona-layer.config.yaml

@@ -97,6 +97,27 @@ Phase 10 の複数体は同じ `Room.enter/leave` のみで表現され、切り
     与えられればパッケージに同梱する。表情IDとコマ数・fps の契約は
     `tables/expressions.yaml` に記載
 
+## LLM プロバイダの選択（config.py / agent.py）
+
+仕様書は Agent の実体（どの LLM か）を人格レイヤーの範囲外（§1.3）としているため、
+接続先はプラガブルにし、設定ファイルで選べるようにした。
+
+- 対応プロバイダ: **OpenRouter / Gemini / Anthropic / OpenAI**。
+  OpenRouter は OpenAI 互換 API のため `OpenAICompatibleAgent` を OpenAI 本家と
+  共用し、差分（base_url・キー・任意ヘッダ）だけ設定で与える。Gemini は
+  `systemInstruction` + `contents` 形式の専用アダプタ
+- **API キーは設定ファイルに書かず環境変数から読む**（鍵をリポジトリにコミット
+  しないため）。`persona-layer.config.yaml` は `.gitignore` 済み。設定側で
+  `api_key_env` を指定すれば別名の環境変数も使える
+- キー未設定のプロバイダを指したときは、デモが止まらないよう `EchoAgent` に
+  フォールバックする（`build_agent`）。`persona-layer config` で有効な設定を確認できる
+- `provider: auto`（設定ファイル無しの既定）は、キーのある環境変数を検出して
+  プロバイダを自動選択する。既存の `make_agent` は `build_agent` の薄い別名にして
+  後方互換を保った
+- ネットワークに出さずに検証できるよう、各アダプタは httpx の `transport` を
+  差し込めるようにし、テストは `httpx.MockTransport` でリクエスト/レスポンス形式を
+  検証している（実キー不要）
+
 ## 非機能要件の担保（§14）
 
 - 実行時の追加 LLM 呼び出し 0回: メタ発話=プリベイク済みキャッシュ選択、

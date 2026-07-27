@@ -1,0 +1,50 @@
+# ============================================================
+#  Persona Layer LLM 設定ファイル（サンプル）
+# ------------------------------------------------------------
+#  使い方:
+#   1. このファイルを persona-layer.config.yaml という名前でコピー
+#   2. provider に使いたいプロバイダを書く
+#   3. API キーは下記の環境変数に設定（このファイルには書かない）
+#
+#  ※ persona-layer.config.yaml は .gitignore 済み（誤コミット防止）
+#  ※ 設定ファイルを置かなくても、環境変数にキーがあれば provider: auto
+#     が自動でそれを選びます
+# ============================================================
+
+# 使用するプロバイダ: anthropic | openai | openrouter | gemini | mock | auto
+#   auto  = 環境変数にキーがあるものを自動選択（無ければダミー動作）
+#   mock  = 常にダミー（EchoAgent）。オフライン確認用
+provider: openrouter
+
+providers:
+  # ---- OpenRouter（1つのキーで多数のモデルにアクセス）----
+  # 環境変数 OPENROUTER_API_KEY にキーを設定してください
+  openrouter:
+    # モデル一覧: https://openrouter.ai/models
+    model: openai/gpt-4o-mini
+    # 任意: OpenRouter が推奨する識別ヘッダ（無くても動きます）
+    extra:
+      headers:
+        HTTP-Referer: http://localhost:8000
+        X-Title: Persona Layer
+
+  # ---- Google Gemini ----
+  # 環境変数 GEMINI_API_KEY（または GOOGLE_API_KEY）にキーを設定してください
+  gemini:
+    # 例: gemini-2.0-flash / gemini-2.5-flash / gemini-2.5-pro
+    model: gemini-2.0-flash
+
+  # ---- Anthropic（参考）----
+  # 環境変数 ANTHROPIC_API_KEY
+  anthropic:
+    model: claude-sonnet-5
+
+  # ---- OpenAI 本家（参考）----
+  # 環境変数 OPENAI_API_KEY
+  openai:
+    model: gpt-4o-mini
+
+# 全プロバイダ共通の既定値（各 provider 側で個別指定すると上書きされます）
+max_tokens: 1024
+temperature: 0.7
+timeout: 60
