@@ -15,7 +15,7 @@ import random
 import time
 from typing import Callable
 
-from ..agent import Agent
+from ..agent import Agent, AgentRequest, AgentTurn
 from ..bridge import AgentBridge, AgentError
 from ..composers import compose_prosody
 from ..expression import ExpressionMachine
@@ -28,6 +28,14 @@ from .arbiter import SpeechArbiter
 from .bus import RoomBus, RoomEvent
 
 _CORRECTION_MARKERS = ("違うよ", "違います", "間違って", "そうじゃなくて", "訂正")
+
+# Agent へ渡す依頼文。回答の「内容」は指示せず、枠組みだけを与える（§2.1）。
+# 相槌・つなぎはメタ発話が担うため、回答側で重複させないよう明示する。
+INSTRUCTION = (
+    "上記の会話の流れを踏まえ、直前の発話に応答してください。"
+    "あなたの役割と得意分野に沿って、具体的な内容を述べてください。"
+    "挨拶や相槌だけで終わらせないでください（相槌は別のしくみが担当します）。"
+)
 
 
 class PersonaInstance:
@@ -50,6 +58,8 @@ class PersonaInstance:
         self.persona = persona
         self.binding = binding
         self.instance_id = f"{persona.id}@{agent.agent_id}"
+        # Agent 側が会話履歴を保持する構成のための識別子（人格×利用者で一意）
+        self.session_id = f"{self.instance_id}:{user_id}"
         self.bus = bus
         self.timescale = timescale
         self._clock = clock
@@ -180,7 +190,10 @@ class PersonaInstance:
         )
 
     def _context_prompt(self) -> str:
-        """§11.5: 直近発話に話者名を付け、自分の過去発話に印をつけて Agent へ渡す。"""
+        """§11.5: 直近発話に話者名を付け、自分の過去発話に印をつけて Agent へ渡す。
+
+        構造化メッセージ（turns）に対応しない Agent 向けの平文フォールバック。
+        """
         lines: list[str] = ["これまでの会話:"]
         for event in self.bus.recent_speeches():
             name = event.speaker_name or event.speaker_id
@@ -192,8 +205,29 @@ class PersonaInstance:
                 label = f"{name}（他のAI）"
             lines.append(f"{label}: {event.text}")
         lines.append("")
-        lines.append("上記の会話の流れを踏まえ、直前の発話に応答してください。")
+        lines.append(INSTRUCTION)
         return "\n".join(lines)
+
+    def _build_request(self) -> AgentRequest:
+        """§11.5: 会話文脈を役割構造（user/assistant）付きで組み立てる。"""
+        turns: list[AgentTurn] = []
+        for event in self.bus.recent_speeches():
+            is_self = event.speaker_id == self.instance_id
+            turns.append(
+                AgentTurn(
+                    role="assistant" if is_self else "user",
+                    content=event.text,
+                    speaker_name=event.speaker_name or event.speaker_id,
+                    speaker_kind=event.speaker_kind,
+                    is_self=is_self,
+                )
+            )
+        return AgentRequest(
+            prompt=self._context_prompt(),
+            instruction=INSTRUCTION,
+            turns=turns,
+            session_id=self.session_id,
+        )
 
     async def _speak(self, trigger: RoomEvent) -> None:
         self.bus.publish(
@@ -205,7 +239,7 @@ class PersonaInstance:
         try:
             # filler は Agent への転送と同時に出す（§7.3: 応答を待たない）
             self._publish_meta("filler")
-            ask = asyncio.ensure_future(self.bridge.ask(self._context_prompt()))
+            ask = asyncio.ensure_future(self.bridge.ask(self._build_request()))
             progressed = False
             try:
                 while True:

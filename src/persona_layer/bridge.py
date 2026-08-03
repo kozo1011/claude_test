@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from .agent import Agent
+from .agent import Agent, AgentRequest, AgentTurn
 from .composers import compose_prompt
 from .memory import PersonaMemory
 from .models import Persona, PersonaBinding
@@ -65,13 +65,45 @@ class AgentBridge:
             memory_lines=memory_lines,
         )
 
-    async def ask(self, context_prompt: str) -> BridgeResult:
-        """Agent へ転送し、回答を素通しで返す。"""
+    def persona_payload(self) -> dict:
+        """Agent へ渡す構造化した人格情報（§5.2: 整数6個 + 文字列数個）。
+
+        system プロンプトを解釈しない既存 Agent でも、必要なら参照できるようにする。
+        """
+        return {
+            "id": self.persona.id,
+            "displayName": self.persona.display_name,
+            "firstPerson": self.persona.anchor.first_person,
+            "secondPerson": self.persona.anchor.second_person,
+            "verbalTics": list(self.persona.anchor.verbal_tics),
+            "style": self.persona.style.as_dict(),
+            "expertise": list(self.binding.expertise),
+            "outOfScopeStance": self.binding.out_of_scope_stance,
+        }
+
+    async def ask(self, request: AgentRequest | str) -> BridgeResult:
+        """Agent へ転送し、回答を素通しで返す（§2.1）。
+
+        文字列を渡した場合は単一 user 発話の AgentRequest として扱う。
+        Agent が respond_request を実装していればそちらを優先し、
+        会話の役割構造・セッションID・人格情報を渡す。
+        """
+        if isinstance(request, str):
+            request = AgentRequest(
+                prompt=request,
+                turns=[AgentTurn(role="user", content=request)],
+            )
         requested_at = self._clock()
         self.engine.set_context("thinking", requested_at)
         system = self.system_prompt()
+        request.system = system
+        if not request.persona:
+            request.persona = self.persona_payload()
         try:
-            text = await self.agent.respond(system, context_prompt)
+            if hasattr(self.agent, "respond_request"):
+                text = await self.agent.respond_request(request)
+            else:
+                text = await self.agent.respond(system, request.prompt)
         except Exception as exc:
             self.engine.observe("task_error")
             raise AgentError(str(exc)) from exc

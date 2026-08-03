@@ -1,15 +1,89 @@
 # ============================================================
-#  Persona Layer LLM 設定ファイル（サンプル）
+#  Persona Layer 設定ファイル（サンプル）
 # ------------------------------------------------------------
 #  使い方:
 #   1. このファイルを persona-layer.config.yaml という名前でコピー
-#   2. provider に使いたいプロバイダを書く
-#   3. API キーは下記の環境変数に設定（このファイルには書かない）
+#   2. 接続先を書く（下記2通り）
+#      A) 既存の AI Agent に繋ぐ → agents: セクション（本来の使い方）
+#      B) LLM に直結する         → provider: セクション（配線確認・単体デモ用）
+#   3. API キーは環境変数に設定（このファイルには書かない）
 #
 #  ※ persona-layer.config.yaml は .gitignore 済み（誤コミット防止）
 #  ※ 設定ファイルを置かなくても、環境変数にキーがあれば provider: auto
 #     が自動でそれを選びます
+#  ※ 現在の設定は `persona-layer config` で確認できます
 # ============================================================
+
+# ------------------------------------------------------------
+# A) 既存の AI Agent への接続（HermesAgent など）
+#
+#    人格レイヤーは回答の中身を作りません（仕様書 §1.3）。
+#    タスクを解くのは接続先の Agent の役割で、ここがその接続先です。
+#    文字列中の ${ENV_VAR} は環境変数に置き換わります。
+# ------------------------------------------------------------
+agents:
+  # --- (1) HTTP JSON API に繋ぐ（もっとも汎用的）---
+  hermes:
+    type: http
+    url: http://localhost:9000/chat
+    method: POST
+    headers:
+      Authorization: "Bearer ${HERMES_API_KEY}"   # 不要なら削除
+    # 既定で送るもの（HermesAgent 側の項目名に合わせて変更できます）
+    #   system      : 人格の指示文（口調・6軸など）
+    #   messages    : 会話履歴 [{role, content, speakerName, speakerKind, isSelf}]
+    #   text        : 直前の相手の発話だけが欲しい場合に使う
+    #   instruction : 今回の依頼文
+    #   persona     : 人格情報（id, displayName, style の6軸, expertise など）
+    #   session_id  : 会話の識別子（Agent 側で履歴を持つ場合に使う）
+    # 値に null を書くと、その項目は送りません。
+    send:
+      system: system
+      messages: messages
+      text: text
+      instruction: instruction
+      persona: persona
+      session_id: sessionId
+    # 回答テキストの取り出し先。"result.reply" のようにドットで入れ子も指定可
+    receive: content
+    timeout: 120
+
+  # --- (2) OpenAI 互換 API を出している Agent に繋ぐ ---
+  # hermes-oai:
+  #   type: openai_compatible
+  #   base_url: http://localhost:9000/v1
+  #   model: hermes-1
+  #   api_key: "${HERMES_API_KEY}"
+
+  # --- (3) 同一プロセスの Python 実装に繋ぐ ---
+  # hermes-local:
+  #   type: python
+  #   target: "hermes_agent.runtime:HermesAgent"   # module:Class
+  #   options:
+  #     profile: default
+
+  # --- (4) LLM を1体の Agent として扱う（人格ごとに別 LLM を割り当てる用）---
+  # gemini-agent:
+  #   type: llm
+  #   provider: gemini
+
+# ------------------------------------------------------------
+#  人格 → Agent の割り当て（仕様書 §4.3 の PersonaBinding）
+#
+#  「得意分野」は人格ではなく接続先に属します。同じ人格を別の Agent に
+#  繋ぎ直すと、口調はそのままで得意分野だけが入れ替わります。
+#  expertise は複数人格が同席したときの発話権判定にも使われます（§11.6）。
+# ------------------------------------------------------------
+bindings:
+  - persona: sewa-yaku-kaede       # 人格 JSON の id
+    agent: hermes                  # 上の agents: で定義した名前
+    expertise: [社内手続き, 経費精算]
+    outOfScopeStance: 専門外は正直に伝え、詳しい人格を紹介する
+    invocationAliases: [楓, かえで]
+
+# ------------------------------------------------------------
+# B) LLM 直結（agents: で指定しなかった接続先に使われます）
+# ------------------------------------------------------------
 
 # 使用するプロバイダ: anthropic | openai | openrouter | gemini | mock | auto
 #   auto  = 環境変数にキーがあるものを自動選択（無ければダミー動作）
@@ -45,6 +119,6 @@ providers:
     model: gpt-4o-mini
 
 # 全プロバイダ共通の既定値（各 provider 側で個別指定すると上書きされます）
-max_tokens: 1024
+max_tokens: 2048
 temperature: 0.7
 timeout: 60

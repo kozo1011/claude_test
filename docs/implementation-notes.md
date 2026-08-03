@@ -97,6 +97,51 @@ Phase 10 の複数体は同じ `Room.enter/leave` のみで表現され、切り
     与えられればパッケージに同梱する。表情IDとコマ数・fps の契約は
     `tables/expressions.yaml` に記載
 
+## 既存 AI Agent への接続（agent.py / config.py）
+
+仕様書は「タスク回答の生成はすべて Agent 側の責務」（§1.3）とし、人格レイヤーは
+その回答を素通しする（§2.1）。したがって**本来の接続先は既存の AI Agent** であり、
+LLM 直結は配線確認用の位置づけである。
+
+- **接続の継ぎ目は `Agent` プロトコル**（`respond(system, prompt) -> str`）。
+  `AgentBridge` はこれ越しにしか外部と喋らず、1 PersonaInstance = 1 Agent（§11.1）。
+- 既存 Agent 接続用に3方式を同梱した。いずれも**設定ファイルだけで繋がる**ことを重視:
+  - `HTTPAgent`: 任意の JSON API。**送信フィールド名（`send:`）と回答の取り出し位置
+    （`receive:`、ドット記法）を設定で寄せられる**のが要点。既存 Agent 側を改修せずに
+    済ませるため。`null` 指定でそのフィールドを送らないこともできる
+  - `OpenAICompatibleAgent`: `/chat/completions` 互換を出している Agent 用（LLM と共用）
+  - `load_python_agent`: `module:Class` で同一プロセスの Python 実装を読む
+- **Agent プロトコルの拡張は後方互換**とした。必須は従来どおり `respond(system, prompt)`
+  のままで、会話の役割構造やセッションIDを活かしたい Agent だけが任意メソッド
+  `respond_request(AgentRequest)` を実装する。`AgentBridge.ask()` は `hasattr` で
+  前者/後者を選ぶ。`ask()` は文字列も受け付ける（既存呼び出し・テストの互換維持）
+- `AgentRequest` には `system`（人格記述）に加え、**構造化した `persona`**
+  （6軸・一人称・expertise）と `session_id` を載せた。system プロンプトを解釈しない
+  Agent や、自前で履歴を持つ Agent でも人格情報を使えるようにするため
+- 設定の `agents:` が provider 推定より**優先**される解決順にした
+  （`agents.<id>` → agentId プレフィックス推定 → 既定 provider → キー無しなら Echo）
+- `bindings:` で人格 → Agent の割り当てと `expertise` を設定できるようにした。
+  `expertise` は §11.6 の bid 判定と §11.2 の他人格提案にそのまま効く。
+  ブラウザからの入室は `agentId` 省略時に登録済み Binding を参照する
+- ヘッダ等に `${ENV_VAR}` を書けるようにし（`config.expand_env`）、
+  API キーを設定ファイルに直書きしないで済むようにした
+
+### 応答文脈の構造化（品質改善）
+
+従来は会話履歴を1本の平文に潰して単一 user メッセージで渡していた。これを
+`AgentTurn`（role / 話者名 / `is_self`）のリストに変更し、LLM アダプタは
+user/assistant の多ターンとして送るようにした（Gemini は user/model へ写像）。
+
+- Anthropic / Gemini は role の交互を要求するため、連続する同 role を結合し、
+  先頭の assistant は落とす（`_merge_consecutive`）
+- 自分以外の発話には話者名を前置して「誰の主張か」を保つ（§11.5）
+- 平文 `prompt` も引き続き組み立てて `AgentRequest.prompt` に載せ、
+  `respond_request` 非対応の Agent へのフォールバックにしている
+- 依頼文（`instruction`）は「具体的に述べる／相槌だけで終わらせない」を明示。
+  相槌はメタ発話が担うため、回答側での重複を防ぐ。回答の**内容**は指示していない（§2.1）
+- 既定 `max_tokens` を 1024 → 2048 に引き上げた（思考トークンが出力上限に含まれる
+  モデルで応答が途中で切れるのを避けるため）
+
 ## LLM プロバイダの選択（config.py / agent.py）
 
 仕様書は Agent の実体（どの LLM か）を人格レイヤーの範囲外（§1.3）としているため、

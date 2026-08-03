@@ -6,16 +6,20 @@ Agent 出力に声・文体・表情を付与する中間レイヤー。タス�
 
 from .agent import (
     Agent,
+    AgentRequest,
+    AgentTurn,
     AnthropicAgent,
     EchoAgent,
     GeminiAgent,
+    HTTPAgent,
     OpenAICompatibleAgent,
     ScriptedAgent,
     build_agent,
+    load_python_agent,
     make_agent,
 )
 from .breeder import BreedResult, PersonaBreeder, RefusalOverflowError
-from .config import AppConfig, ConfigError, LLMConfig, load_config
+from .config import AgentSpec, AppConfig, ConfigError, LLMConfig, load_config
 from .bridge import AgentBridge, BridgeResult
 from .composers import Prosody, compose_prompt, compose_prosody, effective_distance
 from .expression import ExpressionMachine
@@ -45,6 +49,9 @@ __all__ = [
     "SCHEMA_VERSION",
     "Agent",
     "AgentBridge",
+    "AgentRequest",
+    "AgentSpec",
+    "AgentTurn",
     "Anchor",
     "AnthropicAgent",
     "AppConfig",
@@ -56,6 +63,7 @@ __all__ = [
     "ExpressionMachine",
     "FamiliarityStore",
     "GeminiAgent",
+    "HTTPAgent",
     "LLMConfig",
     "OpenAICompatibleAgent",
     "Lineage",
@@ -90,6 +98,7 @@ __all__ = [
     "effective_distance",
     "from_preset",
     "load_config",
+    "load_python_agent",
     "make_agent",
     "preset_names",
 ]

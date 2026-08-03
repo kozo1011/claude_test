@@ -203,7 +203,8 @@ async def test_gemini_request_and_response():
     assert captured["key"] == "g-test"  # キーはヘッダ（URLに載せない）
     assert captured["body"]["systemInstruction"]["parts"][0]["text"] == "あなたは源です"
     assert captured["body"]["contents"][0]["parts"][0]["text"] == "調子はどう？"
-    assert captured["body"]["generationConfig"]["maxOutputTokens"] == 1024
+    # 既定 max_tokens は 2048（1024 では思考トークンを含むモデルで切れるため）
+    assert captured["body"]["generationConfig"]["maxOutputTokens"] == 2048
 
 
 async def test_gemini_no_candidates_returns_empty():

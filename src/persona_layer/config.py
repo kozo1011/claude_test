@@ -17,11 +17,15 @@ API キーは**設定ファイルに書かず環境変数から**読む（鍵を
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+AGENT_TYPES = ("http", "openai_compatible", "python", "llm", "mock")
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 KNOWN_PROVIDERS = ("anthropic", "openai", "openrouter", "gemini")
 
@@ -80,15 +84,88 @@ def _read_key(provider: str, pconf: dict) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class AgentSpec:
+    """設定ファイルの ``agents:`` に定義された1件の接続先。"""
+
+    name: str
+    type: str                 # http | openai_compatible | python | llm | mock
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+def expand_env(value: Any) -> Any:
+    """文字列中の ``${ENV_VAR}`` を環境変数で置換する（辞書・リストは再帰）。
+
+    ヘッダの API キーなどを設定ファイルに直書きせず済ませるため。
+    未定義の環境変数は空文字になる。
+    """
+    if isinstance(value, str):
+        return _ENV_PATTERN.sub(lambda m: os.environ.get(m.group(1), ""), value)
+    if isinstance(value, dict):
+        return {k: expand_env(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_env(v) for v in value]
+    return value
+
+
 class AppConfig:
     def __init__(self, raw: dict | None = None) -> None:
         raw = raw or {}
         self.raw = raw
         self.default_provider = str(raw.get("provider", "auto") or "auto")
-        self.max_tokens = int(raw.get("max_tokens", 1024))
+        self.max_tokens = int(raw.get("max_tokens", 2048))
         self.temperature = float(raw.get("temperature", 0.7))
         self.timeout = float(raw.get("timeout", 60.0))
         self._providers: dict[str, dict] = raw.get("providers", {}) or {}
+        self._agents: dict[str, dict] = raw.get("agents", {}) or {}
+        self._bindings: list[dict] = raw.get("bindings", []) or []
+
+    # ---- agents:（既存 AI Agent への接続先） ----
+
+    def agent_names(self) -> list[str]:
+        return list(self._agents)
+
+    def resolve_agent(self, agent_id: str) -> AgentSpec | None:
+        """``agents.<agent_id>`` の定義を返す。無ければ None（= プロバイダ推定へ）。"""
+        conf = self._agents.get(agent_id)
+        if conf is None:
+            return None
+        if not isinstance(conf, dict):
+            raise ConfigError(f"agents.{agent_id} はマッピング形式で書いてください")
+        agent_type = str(conf.get("type", "")).strip()
+        if not agent_type:
+            raise ConfigError(f"agents.{agent_id} に type がありません")
+        if agent_type not in AGENT_TYPES:
+            raise ConfigError(
+                f"agents.{agent_id}.type が不正です: {agent_type}"
+                f"（利用可能: {', '.join(AGENT_TYPES)}）"
+            )
+        return AgentSpec(
+            name=agent_id,
+            type=agent_type,
+            config=expand_env({k: v for k, v in conf.items() if k != "type"}),
+        )
+
+    # ---- bindings:（人格 → Agent の割り当て・§4.3） ----
+
+    def bindings(self) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for entry in self._bindings:
+            if not isinstance(entry, dict):
+                raise ConfigError("bindings の各要素はマッピング形式で書いてください")
+            persona_id = entry.get("persona") or entry.get("personaId")
+            if not persona_id:
+                raise ConfigError("bindings の要素に persona がありません")
+            result.append(
+                {
+                    "persona_id": str(persona_id),
+                    "agent_id": str(entry.get("agent") or entry.get("agentId") or "default"),
+                    "expertise": list(entry.get("expertise") or []),
+                    "out_of_scope_stance": str(entry.get("outOfScopeStance", "")),
+                    "invocation_aliases": list(entry.get("invocationAliases") or []),
+                }
+            )
+        return result
 
     def autodetect(self) -> str:
         """キーが設定されているプロバイダを既定順で1つ選ぶ。無ければ mock。"""

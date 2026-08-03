@@ -58,7 +58,7 @@ class BindingRequest(BaseModel):
 
 class EnterRequest(BaseModel):
     personaId: str
-    agentId: str = "default"
+    agentId: str | None = None  # 省略時は登録済み Binding（設定の bindings:）に従う
     userId: str = "default"
 
 
@@ -110,18 +110,34 @@ def create_app(
     agents = AgentPool(app_config)
     rooms: dict[str, Room] = {}
 
+    configured_bindings = {b["persona_id"]: b for b in app_config.bindings()}
     for path in persona_files or []:
         persona = Persona.model_validate(
             json.loads(Path(path).read_text(encoding="utf-8"))
         )
         registry.create(persona)
-        registry.bind(
-            PersonaBinding(
-                persona_id=persona.id,
-                agent_id="default",  # 設定の provider（既定は環境変数から自動）を使う
-                invocation_aliases=[persona.display_name],
+        # 設定ファイルの bindings: があればそれを使う（人格ごとに接続先 Agent と
+        # 得意分野を割り当てられる・§4.3）。無ければ既定 Agent に繋ぐ。
+        entry = configured_bindings.get(persona.id)
+        if entry is not None:
+            registry.bind(
+                PersonaBinding(
+                    persona_id=persona.id,
+                    agent_id=entry["agent_id"],
+                    expertise=entry["expertise"],
+                    out_of_scope_stance=entry["out_of_scope_stance"],
+                    invocation_aliases=entry["invocation_aliases"]
+                    or [persona.display_name],
+                )
             )
-        )
+        else:
+            registry.bind(
+                PersonaBinding(
+                    persona_id=persona.id,
+                    agent_id="default",  # 設定の provider（既定は環境変数から自動）
+                    invocation_aliases=[persona.display_name],
+                )
+            )
 
     def _registry_call(fn, *args):
         try:
@@ -143,13 +159,16 @@ def create_app(
 
     @app.get("/api/config")
     async def active_config() -> dict:
-        """現在有効な LLM 設定（キーは返さない）。ブラウザの表示・確認用。"""
+        """現在有効な接続先（キーは返さない）。ブラウザの表示・確認用。"""
         llm = app_config.resolve()
+        agent_names = app_config.agent_names()
         return {
             "provider": llm.provider,
             "model": llm.model,
             "hasApiKey": llm.has_key,
-            "usingMock": llm.provider == "mock" or not llm.has_key,
+            "agents": agent_names,  # 設定された既存 Agent の接続先名
+            "usingMock": not agent_names
+            and (llm.provider == "mock" or not llm.has_key),
         }
 
     @app.get("/api/personas")
@@ -291,15 +310,20 @@ def create_app(
     async def enter_room(room_id: str, req: EnterRequest) -> dict:
         room = _room(room_id)
         persona = _registry_call(registry.get, req.personaId)
+        agent_id = req.agentId
+        if not agent_id or agent_id == "default":
+            # 登録済み Binding（設定ファイル由来を含む）があればその接続先を使う
+            registered = registry.bindings(req.personaId)
+            agent_id = registered[0].agent_id if registered else "default"
         try:
-            binding = registry.binding(req.personaId, req.agentId)
+            binding = registry.binding(req.personaId, agent_id)
         except RegistryError:
             binding = PersonaBinding(
                 persona_id=req.personaId,
-                agent_id=req.agentId,
+                agent_id=agent_id,
                 invocation_aliases=[persona.display_name],
             )
-        agent = agents.get(req.agentId)
+        agent = agents.get(agent_id)
         try:
             instance = await room.enter(
                 persona, binding, agent, user_id=req.userId

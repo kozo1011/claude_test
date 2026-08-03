@@ -110,17 +110,24 @@ def cmd_import(args: argparse.Namespace) -> None:
         _dump_persona(persona, args.output)
 
 
-async def _demo(persona_paths: list[str], config: AppConfig) -> None:
+async def _demo(
+    persona_paths: list[str], config: AppConfig, agent_id: str | None = None
+) -> None:
     room = Room(timescale=1.0)
     room.join_human("user", "利用者")
+    configured = {b["persona_id"]: b for b in config.bindings()}
     for i, path in enumerate(persona_paths):
         persona = _load_persona(path)
-        agent = make_agent(f"agent-{i}", config)
+        entry = configured.get(persona.id)
+        target = agent_id or (entry or {}).get("agent_id") or f"agent-{i}"
+        agent = make_agent(target, config)
         binding = PersonaBinding(
             persona_id=persona.id,
             agent_id=agent.agent_id,
-            expertise=[],
-            invocation_aliases=[persona.display_name],
+            expertise=list((entry or {}).get("expertise") or []),
+            out_of_scope_stance=str((entry or {}).get("out_of_scope_stance") or ""),
+            invocation_aliases=list((entry or {}).get("invocation_aliases") or [])
+            or [persona.display_name],
         )
         await room.enter(persona, binding, agent)
         print(f"[入室] {persona.display_name} ({persona.id}) → {agent.agent_id}")
@@ -165,23 +172,62 @@ def _load_config_or_exit(path: str | None) -> AppConfig:
 def cmd_config(args: argparse.Namespace) -> None:
     config = _load_config_or_exit(args.config)
     llm = config.resolve()
-    print(f"provider:   {llm.provider}")
-    print(f"model:      {llm.model or '(なし)'}")
-    print(f"base_url:   {llm.base_url or '(なし)'}")
-    print(f"APIキー:    {'設定済み' if llm.has_key else '未設定（→ ダミーで動作）'}")
+    print("[既定の LLM（agents: 未定義の接続先に使われる）]")
+    print(f"  provider: {llm.provider}")
+    print(f"  model:    {llm.model or '(なし)'}")
+    print(f"  base_url: {llm.base_url or '(なし)'}")
+    print(f"  APIキー:  {'設定済み' if llm.has_key else '未設定（→ ダミーで動作）'}")
     if llm.provider == "mock" or not llm.has_key:
-        print("→ 実際の LLM ではなくダミー（EchoAgent）で応答します")
+        print("  → 実際の LLM ではなくダミー（EchoAgent）で応答します")
+
+    names = config.agent_names()
+    print()
+    print("[接続先 Agent（agents:）]")
+    if not names:
+        print("  (未定義) 既存 AI Agent に繋ぐには agents: を設定してください")
+    for name in names:
+        try:
+            spec = config.resolve_agent(name)
+        except ConfigError as exc:
+            print(f"  - {name}: 設定エラー: {exc}")
+            continue
+        detail = spec.config.get("url") or spec.config.get("target") or spec.config.get(
+            "base_url"
+        ) or spec.config.get("provider") or ""
+        print(f"  - {name}  type={spec.type}  {detail}")
+
+    bindings = config.bindings()
+    if bindings:
+        print()
+        print("[人格 → Agent の割り当て（bindings:）]")
+        for b in bindings:
+            expertise = "、".join(b["expertise"]) or "(なし)"
+            print(f"  - {b['persona_id']} → {b['agent_id']}  得意分野: {expertise}")
+
+
+def _connection_info(config: AppConfig, agent_id: str | None = None) -> str:
+    """起動時に表示する接続先の説明。"""
+    if agent_id:
+        return f"接続先 Agent: {agent_id}"
+    if config.agent_names():
+        return f"接続先 Agent: {'、'.join(config.agent_names())}（bindings: に従って割り当て）"
+    llm = config.resolve()
+    if llm.provider == "mock" or not llm.has_key:
+        return (
+            "接続先が未設定のためダミー応答で動作します"
+            "（既存 Agent に繋ぐには設定の agents: を、LLM 直結なら provider: を設定）"
+        )
+    return f"LLM 直結: {llm.provider} / {llm.model}"
 
 
 def cmd_demo(args: argparse.Namespace) -> None:
     config = _load_config_or_exit(args.config)
-    llm = config.resolve()
-    if llm.provider == "mock" or not llm.has_key:
-        print("[info] LLM 未設定のためダミー応答で動作します（詳細: persona-layer config）",
-              file=sys.stderr)
-    else:
-        print(f"[info] LLM: {llm.provider} / {llm.model}", file=sys.stderr)
-    asyncio.run(_demo(args.files, config))
+    print(f"[info] {_connection_info(config, args.agent)}", file=sys.stderr)
+    try:
+        asyncio.run(_demo(args.files, config, args.agent))
+    except ConfigError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -190,12 +236,8 @@ def cmd_serve(args: argparse.Namespace) -> None:
     from .server import create_app
 
     config = _load_config_or_exit(args.config)
-    llm = config.resolve()
     app = create_app(persona_files=args.files, config=config)
-    if llm.provider == "mock" or not llm.has_key:
-        print("[info] LLM 未設定のためダミー応答で動作します（詳細: persona-layer config）")
-    else:
-        print(f"[info] LLM: {llm.provider} / {llm.model}")
+    print(f"[info] {_connection_info(config)}")
     print(f"http://{args.host}:{args.port}/ をブラウザで開いてください")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
@@ -251,6 +293,10 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("demo", help="ターミナルでデモルームを実行する")
     p.add_argument("files", nargs="+", help="人格 JSON（複数可＝複数体同時稼働）")
     p.add_argument("--config", "-c", default=None, help="設定ファイル（YAML）のパス")
+    p.add_argument(
+        "--agent", "-a", default=None,
+        help="接続先 Agent 名（設定の agents: で定義したもの。例: hermes）",
+    )
     p.set_defaults(func=cmd_demo)
 
     p = sub.add_parser("serve", help="リファレンスAPIサーバ + ブラウザデモを起動する")

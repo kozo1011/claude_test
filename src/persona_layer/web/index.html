@@ -106,7 +106,9 @@ async function init() {
   let note = "";
   try {
     const cfg = await (await fetch("/api/config")).json();
-    note = cfg.usingMock ? "（回答: ダミー）" : `（回答: ${cfg.provider}/${cfg.model}）`;
+    if (cfg.agents && cfg.agents.length) note = `（回答: Agent ${cfg.agents.join("/")}）`;
+    else if (cfg.usingMock) note = "（回答: ダミー）";
+    else note = `（回答: ${cfg.provider}/${cfg.model}）`;
   } catch (e) { /* 設定が取れなくても動作は続ける */ }
   statusEl.textContent = personas.length ? `ルーム ${roomId} ${note}` : "人格が未登録です（serve に人格JSONを渡してください）";
 }
@@ -115,7 +117,7 @@ document.getElementById("enterBtn").onclick = async () => {
   if (!sel.value) return;
   const res = await fetch(`/api/rooms/${roomId}/enter`, {
     method:"POST", headers:{"content-type":"application/json"},
-    body: JSON.stringify({ personaId: sel.value, agentId: "default" })
+    body: JSON.stringify({ personaId: sel.value })
   });
   if (!res.ok) add("sys", (await res.json()).detail || "入室に失敗しました");
 };

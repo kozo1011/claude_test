@@ -73,12 +73,74 @@ pip install -e ".[dev]"
 pytest   # 受け入れ基準 1,5,6,7,8,9,10,11,12 の自動テストを含む83件
 ```
 
-### 本物の AI につなぐ（LLM プロバイダの選択）
+### 既存の AI Agent につなぐ（本来の使い方）
 
-ダミーの代わりに実際の LLM に回答を生成させられます（人格レイヤーはその回答を
-書き換えず、声・表情・相槌だけを乗せます・§2.1）。対応プロバイダは
-**OpenRouter / Gemini / Anthropic / OpenAI**。使うプロバイダとモデルは
-**設定ファイル**で選び、**API キーは環境変数**で渡します。
+人格レイヤーは**回答の中身を作りません**（仕様書 §1.3）。タスクを解くのは接続先の
+Agent の役割で、本レイヤーはその回答を**書き換えずに素通し**し（§2.1）、
+前後の相槌・声・表情・発話タイミングだけを担当します。
+自作の AI Agent（HermesAgent など）は**コードを書かずに設定ファイルだけ**で接続できます。
+
+`persona-layer.config.yaml` に接続先を書きます。
+
+```yaml
+agents:
+  hermes:
+    type: http
+    url: http://localhost:9000/chat
+    headers:
+      Authorization: "Bearer ${HERMES_API_KEY}"   # ${} は環境変数に展開
+    receive: content        # 回答の取り出し先（"result.reply" のような入れ子も可）
+
+bindings:                   # 人格ごとに接続先と得意分野を割り当てる（§4.3）
+  - persona: sewa-yaku-kaede
+    agent: hermes
+    expertise: [売上, 経費精算]
+```
+
+これだけで、人格レイヤーは次の JSON を Agent へ POST します。
+
+```json
+{
+  "system": "あなたは「楓」として振る舞います。…（人格の指示文）",
+  "messages": [{"role": "user", "content": "…", "speakerName": "利用者",
+                "speakerKind": "human", "isSelf": false}],
+  "text": "直前の相手の発話",
+  "instruction": "今回の依頼文",
+  "persona": {"id": "…", "displayName": "楓", "style": {"distance": 2, …},
+              "expertise": ["売上"]},
+  "sessionId": "sewa-yaku-kaede@hermes:default"
+}
+```
+
+Agent 側は `{"content": "回答テキスト"}` を返すだけです。
+**送受信のフィールド名は `send:` / `receive:` で自由に変更できる**ので、
+既存 API を改修せずそのまま繋げます（使わない項目は `null` を指定すれば送りません）。
+
+| 接続方式 | `type` | 使う場面 |
+|---|---|---|
+| HTTP JSON API | `http` | もっとも汎用。既存 Agent の API 形状に合わせられる |
+| OpenAI 互換 API | `openai_compatible` | Agent が `/chat/completions` 互換を出している場合 |
+| Python 直接 | `python` | Agent が Python 製で、同一プロセスで動かす場合（`target: "module:Class"`） |
+| LLM 直結 | `llm` | 人格ごとに別 LLM を割り当てたい場合 |
+
+```bash
+persona-layer config                                  # 接続先の確認
+persona-layer serve personas/*.json                   # ブラウザで対話
+persona-layer demo personas/sewa-yaku-kaede.json -a hermes   # ターミナルで対話
+```
+
+接続先が落ちている場合は `apology` のメタ発話（「すみません、失敗しました」）に
+自動で切り替わり、ルームは動き続けます。
+
+### LLM に直結する（配線確認・単体デモ用）
+
+接続先の Agent を用意せず、LLM に直接喋らせることもできます。
+対応プロバイダは **OpenRouter / Gemini / Anthropic / OpenAI**。使うプロバイダと
+モデルは**設定ファイル**で選び、**API キーは環境変数**で渡します。
+
+> **注意**: この構成は配線確認・単体デモ向けです。素の LLM に会話文脈を渡すだけで、
+> タスクを解く仕組み（ツール・知識・記憶）が無いため、応答は一般的な雑談の域を出ません。
+> 実用的な応答が必要な場合は、上記「既存の AI Agent につなぐ」を使ってください。
 
 **手順:**
 
@@ -154,8 +216,8 @@ persona-layer serve personas/*.json
 | `src/persona_layer/meta_speech.py` | メタ発話のプリベイクと選択 | §7 |
 | `src/persona_layer/expression.py` | ExpressionMachine（決定的マッピング） | §8 |
 | `src/persona_layer/memory.py` | PersonaMemory（機械的トリガー・責務分離） | §9 |
-| `src/persona_layer/agent.py` | Agent アダプタ（Echo / Anthropic / OpenAI互換=OpenRouter / Gemini） | §1.3 |
-| `src/persona_layer/config.py` | LLM プロバイダ・モデルの設定（YAML + 環境変数） | §1.3 |
+| `src/persona_layer/agent.py` | Agent 抽象と接続アダプタ（HTTP / Python / OpenAI互換 / Anthropic / Gemini / Echo） | §1.3 |
+| `src/persona_layer/config.py` | 接続先 Agent・LLM プロバイダ・人格割り当ての設定（YAML + 環境変数） | §1.3, §4.3 |
 | `persona-layer.config.example.yaml` | 設定ファイルのサンプル（コピーして使う） | — |
 | `src/persona_layer/bridge.py` | AgentBridge（素通し保証・1:1） | §2.1, §11.1 |
 | `src/persona_layer/room/` | Room / RoomBus / PersonaInstance / SpeechArbiter | §3, §11 |
